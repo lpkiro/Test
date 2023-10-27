@@ -22,7 +22,13 @@ jobs:
         dotnet-version: 6.x
     - name: Restore dependencies
       run: dotnet restore TestConsoleApp/TestConsoleApp.csproj
+    - name: Restore test dependencies
+      run: dotnet restore TestConsoleApp.Tests/TestConsoleApp.Tests.csproj
     - name: Build
       run: dotnet build TestConsoleApp/TestConsoleApp.csproj --no-restore
+    - name: Build test
+      run: dotnet build TestConsoleApp.Tests/TestConsoleApp.Tests.csproj --no-restore
     - name: Test
       run: dotnet test TestConsoleApp/TestConsoleApp.csproj --no-build --verbosity normal
+    - name: Test test
+      run: dotnet test TestConsoleApp.Tests/TestConsoleApp.Tests.csproj --no-build --verbosity normal
