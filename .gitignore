@@ -4,4 +4,8 @@
 
 /.vs
 /TestConsoleApp/obj
+/TestConsoleApp/bin
 /TestConsoleApp/.vs
+/TestConsoleApp.Tests/obj
+/TestConsoleApp.Tests/bin
+/TestConsoleApp.Tests/.vs
