@@ -55,8 +55,6 @@ public partial class MainWindow : Window
 
         try
         {
-            using var ocr = new OcrService(AppContext.BaseDirectory);
-
             for (var i = 0; i < _selectedFiles.Length; i++)
             {
                 var file = _selectedFiles[i];
@@ -65,10 +63,19 @@ public partial class MainWindow : Window
                 ScanResult result;
                 try
                 {
-                    result = await Task.Run(() => ocr.Scan(file));
+                    // Tesseract/OpenCV are native libraries. Create, use and dispose the OCR
+                    // service on the SAME worker thread. Creating TesseractEngine on the UI
+                    // thread and then using it inside Task.Run can cause a native process crash
+                    // that bypasses normal C# exception handling.
+                    result = await Task.Run(() =>
+                    {
+                        using var ocr = new OcrService(AppContext.BaseDirectory);
+                        return ocr.Scan(file);
+                    });
                 }
                 catch (Exception ex)
                 {
+                    App.WriteCrashLog(ex, $"Processing {file}");
                     result = new ScanResult
                     {
                         FileName = Path.GetFileName(file),
@@ -91,7 +98,12 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, ex.Message, "Помилка", MessageBoxButton.OK, MessageBoxImage.Error);
+            App.WriteCrashLog(ex, "ProcessButton_Click");
+            MessageBox.Show(this,
+                ex.Message + "\n\nДеталі записано у PWPartyScanner_error.log поруч із програмою.",
+                "Помилка",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
             StatusText.Text = "Помилка ініціалізації OCR.";
         }
         finally
