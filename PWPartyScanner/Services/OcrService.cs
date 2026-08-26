@@ -76,7 +76,8 @@ public sealed class OcrService : IDisposable
 
     private (CvRect Nearby, CvRect Party, string Source) FindListRegions(Mat source)
     {
-        // First try the text headers. This is robust when the dialog is moved or UI scale changes.
+        // Best case: both column headers were recognized. Their positions describe the columns
+        // directly and do not depend on the window position on screen.
         var headers = TryFindHeaders(source);
         if (headers is not null)
         {
@@ -88,8 +89,6 @@ public sealed class OcrService : IDisposable
             var row = Math.Max(10, Math.Max(near.Height, party.Height));
             var top = Math.Max(near.Bottom, party.Bottom) + Math.Max(2, row / 6);
 
-            // Keep the crop tightly around the nickname columns. Wide crops make Tesseract
-            // mix borders/buttons with short names such as Вай and m1d9.
             var nearLeft = (int)Math.Round(near.X - gap * 0.10);
             var nearbyRect = Clamp(new CvRect(
                 nearLeft,
@@ -105,17 +104,33 @@ public sealed class OcrService : IDisposable
                 partyRight - partyLeft,
                 row * 8), source.Size());
 
-            if (nearbyRect.Width > 40 && nearbyRect.Height > 40 && partyRect.Width > 40 && partyRect.Height > 30)
+            if (IsUsableRegion(nearbyRect, partyRect))
                 return (nearbyRect, partyRect, "OCR-заголовки");
         }
 
-        // Visual fallback for cases where Tesseract cannot read the gold headers.
+        // On several real PW screenshots Tesseract reads the large title "Група" perfectly,
+        // but cannot read the much smaller gold column headers.  The title is an excellent
+        // anchor: its centre is the centre of this dialog and its glyph width scales together
+        // with the game UI.  This fixes the regression where image2.png returned zero players.
+        var title = TryFindDialogTitle(source);
+        if (title is not null)
+        {
+            var regions = BuildRegionsFromDialogTitle(title.Value, source.Size());
+            if (regions is not null)
+                return (regions.Value.Nearby, regions.Value.Party, "OCR-заголовок «Група»");
+        }
+
+        // Last resort only. Hough lines are less reliable because spell/boss UI can create a
+        // longer horizontal line than the dialog border.
         var fallback = FindByWindowTopLine(source);
         if (fallback is not null)
             return fallback.Value;
 
         throw new InvalidOperationException("Не вдалося знайти вікно «Група». Переконайся, що на скріні повністю видно таблиці «Гравці поряд» і «Члени групи».");
     }
+
+    private static bool IsUsableRegion(CvRect nearby, CvRect party) =>
+        nearby.Width > 40 && nearby.Height > 40 && party.Width > 40 && party.Height > 30;
 
     private (CvRect Near, CvRect Party)? TryFindHeaders(Mat source)
     {
@@ -135,11 +150,7 @@ public sealed class OcrService : IDisposable
             if (string.IsNullOrWhiteSpace(text)) continue;
             if (!iterator.TryGetBoundingBox(PageIteratorLevel.TextLine, out TessRect box)) continue;
 
-            var r = new CvRect(
-                (int)Math.Round(box.X1 / 1.8),
-                (int)Math.Round(box.Y1 / 1.8),
-                Math.Max(1, (int)Math.Round(box.Width / 1.8)),
-                Math.Max(1, (int)Math.Round(box.Height / 1.8)));
+            var r = ScaleBack(box, 1.8);
 
             var nearScore = HeaderScore(text, "гравціпоряд", "гравці", "поряд");
             if (nearScore > 0.52 && (nearBest is null || nearScore > nearBest.Value.Score))
@@ -156,9 +167,92 @@ public sealed class OcrService : IDisposable
         return (nearBest.Value.Rect, partyBest.Value.Rect);
     }
 
+    private CvRect? TryFindDialogTitle(Mat source)
+    {
+        const double scale = 1.8;
+        using var enlarged = new Mat();
+        Cv2.Resize(source, enlarged, new Size(), scale, scale, InterpolationFlags.Cubic);
+        using var pix = Pix.LoadFromMemory(EncodePng(enlarged));
+        using var page = _engine.Process(pix, PageSegMode.SparseText);
+        using var iterator = page.GetIterator();
+
+        (CvRect Rect, double Score)? best = null;
+
+        iterator.Begin();
+        do
+        {
+            var text = iterator.GetText(PageIteratorLevel.TextLine)?.Trim();
+            if (string.IsNullOrWhiteSpace(text)) continue;
+            if (!iterator.TryGetBoundingBox(PageIteratorLevel.TextLine, out TessRect box)) continue;
+
+            var r = ScaleBack(box, scale);
+            var centerX = r.X + r.Width / 2.0;
+
+            // Ignore the party HUD title at the far left of the screen.
+            if (centerX < source.Width * 0.18 || centerX > source.Width * 0.78) continue;
+            if (r.Y > source.Height * 0.38) continue;
+            if (r.Width < 20 || r.Width > 100 || r.Height < 7 || r.Height > 36) continue;
+
+            var normalized = NormalizeOcrText(text);
+            var score = Similarity(normalized, "група");
+            if (normalized.Contains("група", StringComparison.Ordinal)) score = 1.0;
+
+            if (score < 0.68) continue;
+
+            // Prefer a larger glyph box when more than one candidate survived.
+            score += Math.Min(0.10, r.Width / 1000.0);
+            if (best is null || score > best.Value.Score)
+                best = (r, score);
+        }
+        while (iterator.Next(PageIteratorLevel.TextLine));
+
+        return best?.Rect;
+    }
+
+    private static (CvRect Nearby, CvRect Party)? BuildRegionsFromDialogTitle(CvRect title, Size sourceSize)
+    {
+        // Measurements from the supplied Perfect World screenshots are extremely consistent:
+        // dialog width / rendered title width ~= 9.3 on both UI scales.
+        var dialogWidth = (int)Math.Round(title.Width * 9.35);
+        if (dialogWidth < 240 || dialogWidth > sourceSize.Width * 0.62)
+            return null;
+
+        var titleCenter = title.X + title.Width / 2.0;
+        var dialogX = (int)Math.Round(titleCenter - dialogWidth / 2.0);
+        var dialogY = (int)Math.Round(title.Y - dialogWidth * 0.025);
+
+        var listTop = dialogY + (int)Math.Round(dialogWidth * 0.130);
+        var nearLeft = dialogX + (int)Math.Round(dialogWidth * 0.235);
+        var boundary = dialogX + (int)Math.Round(dialogWidth * 0.590);
+        var right = dialogX + (int)Math.Round(dialogWidth * 0.985);
+
+        var nearby = Clamp(new CvRect(
+            nearLeft,
+            listTop,
+            boundary - nearLeft,
+            (int)Math.Round(dialogWidth * 0.62)), sourceSize);
+
+        var party = Clamp(new CvRect(
+            boundary,
+            listTop,
+            right - boundary,
+            (int)Math.Round(dialogWidth * 0.27)), sourceSize);
+
+        return IsUsableRegion(nearby, party) ? (nearby, party) : null;
+    }
+
+    private static CvRect ScaleBack(TessRect box, double scale) => new(
+        (int)Math.Round(box.X1 / scale),
+        (int)Math.Round(box.Y1 / scale),
+        Math.Max(1, (int)Math.Round(box.Width / scale)),
+        Math.Max(1, (int)Math.Round(box.Height / scale)));
+
+    private static string NormalizeOcrText(string raw) =>
+        new(raw.ToLowerInvariant().Where(char.IsLetterOrDigit).ToArray());
+
     private static double HeaderScore(string raw, string whole, string word1, string word2)
     {
-        var s = new string(raw.ToLowerInvariant().Where(char.IsLetterOrDigit).ToArray());
+        var s = NormalizeOcrText(raw);
         if (s.Contains(word1) && s.Contains(word2)) return 1.0;
         return Similarity(s, whole);
     }
@@ -197,9 +291,6 @@ public sealed class OcrService : IDisposable
 
         var top = candidates[0];
         var lineLeft = Math.Min(top.Line.P1.X, top.Line.P2.X);
-
-        // The detected line is already close to the real dialog width. The old 1.25 multiplier
-        // made the right column drift too far right on 1073x477 screenshots.
         var estimatedWidth = Math.Min(source.Width, (int)Math.Round(top.Len * 1.02));
         var dialogX = Math.Max(0, lineLeft - (int)Math.Round(estimatedWidth * 0.015));
         var dialogY = Math.Max(0, (int)Math.Round(top.Y));
@@ -221,7 +312,7 @@ public sealed class OcrService : IDisposable
             right - boundary,
             (int)Math.Round(estimatedWidth * 0.25)), source.Size());
 
-        if (nearRect.Width < 40 || partyRect.Width < 40) return null;
+        if (!IsUsableRegion(nearRect, partyRect)) return null;
         return (nearRect, partyRect, "візуальний fallback");
     }
 
@@ -230,8 +321,6 @@ public sealed class OcrService : IDisposable
         using var crop = new Mat(source, rect);
         var results = new List<string>();
 
-        // Perfect World renders each nickname on a clear horizontal baseline. Detecting those
-        // rows first is much more reliable for 3-5 character names than OCR-ing the whole column.
         var rows = DetectTextRows(crop, maxExpected);
 
         foreach (var rowRect in rows)
@@ -242,8 +331,6 @@ public sealed class OcrService : IDisposable
                 results.Add(match);
         }
 
-        // Whole-column OCR remains as a fallback and can recover names whose brightness-based
-        // row detector missed because of spell effects or unusual UI highlighting.
         var maxRawLines = 0;
         foreach (var variant in BuildVariants(crop))
         {
@@ -297,8 +384,6 @@ public sealed class OcrService : IDisposable
         using var gray = new Mat();
         Cv2.CvtColor(crop, gray, ColorConversionCodes.BGR2GRAY);
 
-        // Different nickname colors need different brightness thresholds. We combine detections
-        // from several thresholds and keep baselines confirmed by at least two of them.
         var thresholds = new[] { 70, 82, 94, 106, 118, 132, 148, 166 };
         var clusters = new List<RowCluster>();
         var minPixels = Math.Max(3, crop.Width / 55);
@@ -339,7 +424,6 @@ public sealed class OcrService : IDisposable
             .OrderBy(c => c.Center)
             .ToList();
 
-        // Occasionally one glyph is split into two very close clusters. Keep the stronger one.
         var compact = new List<RowCluster>();
         foreach (var cluster in confirmed)
         {
@@ -355,7 +439,6 @@ public sealed class OcrService : IDisposable
 
         if (compact.Count > maxExpected)
         {
-            // Prefer the rows with strongest multi-threshold support, then restore visual order.
             compact = compact
                 .OrderByDescending(c => c.Support)
                 .ThenBy(c => c.Center)
