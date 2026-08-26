@@ -12,11 +12,12 @@ public partial class MainWindow : Window
 {
     private readonly ObservableCollection<ScanResult> _results = new();
     private string[] _selectedFiles = Array.Empty<string>();
+    private string[] _combinedPlayers = Array.Empty<string>();
 
     public MainWindow()
     {
         InitializeComponent();
-        ResultsGrid.ItemsSource = _results;
+        ResultsList.ItemsSource = _results;
     }
 
     private void SelectButton_Click(object sender, RoutedEventArgs e)
@@ -29,8 +30,14 @@ public partial class MainWindow : Window
         };
 
         if (dlg.ShowDialog(this) != true) return;
+
         _selectedFiles = dlg.FileNames;
         _results.Clear();
+        _combinedPlayers = Array.Empty<string>();
+        CombinedPlayersList.ItemsSource = null;
+        CombinedCountRun.Text = "0";
+        CombinedExpander.Visibility = Visibility.Collapsed;
+
         ProcessButton.IsEnabled = _selectedFiles.Length > 0;
         ExportButton.IsEnabled = false;
         StatusText.Text = $"Обрано файлів: {_selectedFiles.Length}.";
@@ -44,6 +51,7 @@ public partial class MainWindow : Window
         ProcessButton.IsEnabled = false;
         ExportButton.IsEnabled = false;
         _results.Clear();
+        CombinedExpander.Visibility = Visibility.Collapsed;
 
         try
         {
@@ -72,8 +80,14 @@ public partial class MainWindow : Window
                 _results.Add(result);
             }
 
+            UpdateCombinedResult();
             ExportButton.IsEnabled = _results.Any(r => r.UniqueCount > 0);
-            StatusText.Text = $"Готово. Опрацьовано {_results.Count} файлів.";
+
+            var mergeInfo = MergeScreenshotsCheckBox.IsChecked == true && _results.Count >= 2
+                ? $" Разом унікальних по всіх: {_combinedPlayers.Length}."
+                : string.Empty;
+
+            StatusText.Text = $"Готово. Опрацьовано {_results.Count} файлів.{mergeInfo}";
         }
         catch (Exception ex)
         {
@@ -85,6 +99,37 @@ public partial class MainWindow : Window
             SelectButton.IsEnabled = true;
             ProcessButton.IsEnabled = _selectedFiles.Length > 0;
         }
+    }
+
+    private void MergeScreenshotsCheckBox_Changed(object sender, RoutedEventArgs e)
+    {
+        if (!IsLoaded) return;
+        UpdateCombinedResult();
+    }
+
+    private void UpdateCombinedResult()
+    {
+        var shouldMerge = MergeScreenshotsCheckBox.IsChecked == true && _results.Count >= 2;
+
+        if (!shouldMerge)
+        {
+            _combinedPlayers = Array.Empty<string>();
+            CombinedPlayersList.ItemsSource = null;
+            CombinedCountRun.Text = "0";
+            CombinedExpander.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        _combinedPlayers = _results
+            .SelectMany(r => r.UniquePlayers)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(x => x, StringComparer.CurrentCultureIgnoreCase)
+            .ToArray();
+
+        CombinedPlayersList.ItemsSource = _combinedPlayers;
+        CombinedCountRun.Text = _combinedPlayers.Length.ToString();
+        CombinedExpander.Visibility = Visibility.Visible;
+        CombinedExpander.IsExpanded = true;
     }
 
     private void ExportButton_Click(object sender, RoutedEventArgs e)
@@ -108,6 +153,16 @@ public partial class MainWindow : Window
             foreach (var name in item.PartyPlayers) sb.AppendLine($"  - {name}");
             sb.AppendLine($"Унікальних: {item.UniqueCount}");
             foreach (var name in item.UniquePlayers) sb.AppendLine($"  - {name}");
+            sb.AppendLine();
+        }
+
+        if (MergeScreenshotsCheckBox.IsChecked == true && _results.Count >= 2)
+        {
+            UpdateCombinedResult();
+            sb.AppendLine("========================================");
+            sb.AppendLine("РАЗОМ ПО ВСІХ СКРІНШОТАХ");
+            sb.AppendLine($"Унікальних: {_combinedPlayers.Length}");
+            foreach (var name in _combinedPlayers) sb.AppendLine($"  - {name}");
             sb.AppendLine();
         }
 
