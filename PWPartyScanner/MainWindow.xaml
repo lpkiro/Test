@@ -1,0 +1,38 @@
+<Window x:Class="PWPartyScanner.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="PW Party Scanner — clean build" Height="620" Width="1180"
+        WindowStartupLocation="CenterScreen">
+    <Grid Margin="14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0">
+            <TextBlock Text="Аналіз учасників зі скріншотів" FontSize="25" FontWeight="SemiBold"/>
+            <TextBlock Margin="0,5,0,0" Text="OCR виконується локально Tesseract. Читаються «Гравці поряд» + «Члени групи». У результат потрапляють лише ніки з players_list.txt зі збігом ≥ 90%." TextWrapping="Wrap"/>
+        </StackPanel>
+
+        <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,14,0,12">
+            <Button x:Name="SelectButton" Width="170" Height="38" Margin="0,0,10,0" Click="SelectButton_Click">1. Обрати скріншоти</Button>
+            <Button x:Name="ProcessButton" Width="150" Height="38" Margin="0,0,10,0" Click="ProcessButton_Click" IsEnabled="False">2. Опрацювати</Button>
+            <Button x:Name="ExportButton" Width="150" Height="38" Click="ExportButton_Click" IsEnabled="False">3. Вивести у файл</Button>
+        </StackPanel>
+
+        <DataGrid Grid.Row="2" x:Name="ResultsGrid" AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False" HeadersVisibility="Column" SelectionMode="Single">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Файл" Binding="{Binding FileName}" Width="190"/>
+                <DataGridTextColumn Header="Поряд" Binding="{Binding NearbyCount}" Width="65"/>
+                <DataGridTextColumn Header="Група" Binding="{Binding PartyCount}" Width="65"/>
+                <DataGridTextColumn Header="Унікальних" Binding="{Binding UniqueCount}" Width="85"/>
+                <DataGridTextColumn Header="Гравці" Binding="{Binding PlayersText}" Width="*"/>
+                <DataGridTextColumn Header="Статус" Binding="{Binding Status}" Width="220"/>
+            </DataGrid.Columns>
+        </DataGrid>
+
+        <TextBlock Grid.Row="3" x:Name="StatusText" Margin="0,10,0,0" Text="Оберіть один або кілька PNG/JPG скріншотів."/>
+    </Grid>
+</Window>
