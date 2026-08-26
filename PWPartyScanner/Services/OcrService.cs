@@ -1,3 +1,4 @@
+using System.IO;
 using OpenCvSharp;
 using PWPartyScanner.Models;
 using Tesseract;
@@ -20,7 +21,11 @@ public sealed class OcrService : IDisposable
             throw new DirectoryNotFoundException("Не знайдено папку tessdata поруч із програмою.");
 
         _matcher = new GuildMatcher(players);
-        _engine = new TesseractEngine(tessdata, "eng+ukr+rus", EngineMode.LstmOnly);
+
+        // The NuGet Tesseract 5.x package supports this constructor directly.
+        // Using the default engine mode is also compatible with tessdata_fast
+        // (the supplied models are LSTM models).
+        _engine = new TesseractEngine(tessdata, "eng+ukr+rus");
         _engine.DefaultPageSegMode = PageSegMode.SparseText;
         _engine.SetVariable("preserve_interword_spaces", "1");
     }
@@ -91,7 +96,7 @@ public sealed class OcrService : IDisposable
     private (CvRect Near, CvRect Party)? TryFindHeaders(Mat source)
     {
         using var enlarged = new Mat();
-        Cv2.Resize(source, enlarged, Size.Zero, 1.7, 1.7, InterpolationFlags.Cubic);
+        Cv2.Resize(source, enlarged, new Size(), 1.7, 1.7, InterpolationFlags.Cubic);
         using var pix = Pix.LoadFromMemory(EncodePng(enlarged));
         using var page = _engine.Process(pix, PageSegMode.SparseText);
         using var iterator = page.GetIterator();
@@ -199,7 +204,7 @@ public sealed class OcrService : IDisposable
     private static IEnumerable<Mat> BuildVariants(Mat crop)
     {
         var color = new Mat();
-        Cv2.Resize(crop, color, Size.Zero, 3.0, 3.0, InterpolationFlags.Cubic);
+        Cv2.Resize(crop, color, new Size(), 3.0, 3.0, InterpolationFlags.Cubic);
         yield return color;
 
         using var gray0 = new Mat();
@@ -208,7 +213,7 @@ public sealed class OcrService : IDisposable
         var gray = new Mat();
         using (var clahe = Cv2.CreateCLAHE(2.5, new Size(8, 8)))
             clahe.Apply(gray0, gray);
-        Cv2.Resize(gray, gray, Size.Zero, 3.0, 3.0, InterpolationFlags.Cubic);
+        Cv2.Resize(gray, gray, new Size(), 3.0, 3.0, InterpolationFlags.Cubic);
         yield return gray;
 
         using var thresholdBase = new Mat();
@@ -216,7 +221,7 @@ public sealed class OcrService : IDisposable
         var threshold = thresholdBase.Clone();
         if (Cv2.Mean(threshold).Val0 < 128)
             Cv2.BitwiseNot(threshold, threshold);
-        Cv2.Resize(threshold, threshold, Size.Zero, 3.2, 3.2, InterpolationFlags.Nearest);
+        Cv2.Resize(threshold, threshold, new Size(), 3.2, 3.2, InterpolationFlags.Nearest);
         yield return threshold;
     }
 
