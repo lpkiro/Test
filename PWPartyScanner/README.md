@@ -11,3 +11,5 @@
 - поріг збігу: 90%
 
 У publish-пакет додаються eng/ukr/rus traineddata.
+
+Build target: Windows x64 self-contained.
