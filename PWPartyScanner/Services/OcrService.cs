@@ -9,9 +9,28 @@ namespace PWPartyScanner.Services;
 
 public sealed class OcrService : IDisposable
 {
-    private readonly TesseractEngine _engineMulti;
-    private readonly TesseractEngine _engineEng;
+    private readonly TesseractEngine _engine;
     private readonly GuildMatcher _matcher;
+
+    private sealed record RegionRecognition(IReadOnlyList<string> Players, int DetectedCount);
+
+    private sealed class RowCluster
+    {
+        public List<double> Centers { get; } = new();
+        public HashSet<int> Thresholds { get; } = new();
+        public int Top { get; private set; } = int.MaxValue;
+        public int Bottom { get; private set; } = int.MinValue;
+        public double Center => Centers.Count == 0 ? 0 : Centers.Average();
+        public int Support => Thresholds.Count;
+
+        public void Add(double center, int top, int bottom, int thresholdIndex)
+        {
+            Centers.Add(center);
+            Thresholds.Add(thresholdIndex);
+            Top = Math.Min(Top, top);
+            Bottom = Math.Max(Bottom, bottom);
+        }
+    }
 
     public OcrService(string baseDir)
     {
@@ -22,17 +41,9 @@ public sealed class OcrService : IDisposable
             throw new DirectoryNotFoundException("Не знайдено папку tessdata поруч із програмою.");
 
         _matcher = new GuildMatcher(players);
-
-        // Two engines are intentional:
-        //  - eng+ukr+rus is better for mixed/cyrillic names;
-        //  - eng is noticeably better for short latin names such as m1d9.
-        _engineMulti = new TesseractEngine(tessdata, "eng+ukr+rus");
-        _engineMulti.DefaultPageSegMode = PageSegMode.SparseText;
-        _engineMulti.SetVariable("preserve_interword_spaces", "1");
-
-        _engineEng = new TesseractEngine(tessdata, "eng");
-        _engineEng.DefaultPageSegMode = PageSegMode.SparseText;
-        _engineEng.SetVariable("preserve_interword_spaces", "1");
+        _engine = new TesseractEngine(tessdata, "eng+ukr+rus");
+        _engine.DefaultPageSegMode = PageSegMode.SparseText;
+        _engine.SetVariable("preserve_interword_spaces", "1");
     }
 
     public ScanResult Scan(string filePath)
@@ -42,10 +53,11 @@ public sealed class OcrService : IDisposable
             throw new InvalidOperationException("Не вдалося відкрити зображення.");
 
         var regions = FindListRegions(source);
-        var nearby = RecognizeRegion(source, regions.Nearby, 24, regions.RowHeight);
-        var party = RecognizeRegion(source, regions.Party, 6, regions.RowHeight);
+        var nearby = RecognizeRegion(source, regions.Nearby, 24);
+        var party = RecognizeRegion(source, regions.Party, 6);
 
-        var unique = nearby.Concat(party)
+        var unique = nearby.Players
+            .Concat(party.Players)
             .Distinct(StringComparer.Ordinal)
             .ToArray();
 
@@ -53,25 +65,18 @@ public sealed class OcrService : IDisposable
         {
             FileName = Path.GetFileName(filePath),
             FilePath = filePath,
-            NearbyPlayers = nearby,
-            PartyPlayers = party,
+            NearbyPlayers = nearby.Players,
+            PartyPlayers = party.Players,
             UniquePlayers = unique,
-            Status = $"Готово. Область: {regions.Source}."
+            NearbyDetectedCount = nearby.DetectedCount,
+            PartyDetectedCount = party.DetectedCount,
+            Status = $"Готово. Область: {regions.Source}. Рядків на скріні — поряд: {nearby.DetectedCount}, група: {party.DetectedCount}."
         };
     }
 
-    private (CvRect Nearby, CvRect Party, string Source, double RowHeight) FindListRegions(Mat source)
+    private (CvRect Nearby, CvRect Party, string Source) FindListRegions(Mat source)
     {
-        // IMPORTANT: this is now the primary locator. It reproduces the stable
-        // pixel-border locator from v1.5, which was already validated on the
-        // supplied Perfect World screenshots. The previous Hough calibration
-        // overestimated the dialog width by ~25%, which moved the list top down
-        // (losing Вай/Asterita) and moved the party crop too far right.
-        var border = FindByDialogBorderPixels(source);
-        if (border is not null)
-            return border.Value;
-
-        // OCR headers are only a fallback now.
+        // First try the text headers. This is robust when the dialog is moved or UI scale changes.
         var headers = TryFindHeaders(source);
         if (headers is not null)
         {
@@ -80,151 +85,44 @@ public sealed class OcrService : IDisposable
             var partyCenter = (party.X + party.Right) / 2.0;
             var gap = Math.Max(60.0, partyCenter - nearCenter);
             var boundary = (int)Math.Round((nearCenter + partyCenter) / 2.0);
-            var headerHeight = Math.Max(10, Math.Max(near.Height, party.Height));
-            var rowHeight = Math.Max(12.0, headerHeight * 1.55);
-            var top = Math.Max(near.Bottom, party.Bottom) + Math.Max(1, (int)Math.Round(rowHeight * 0.10));
+            var row = Math.Max(10, Math.Max(near.Height, party.Height));
+            var top = Math.Max(near.Bottom, party.Bottom) + Math.Max(2, row / 6);
 
-            var nearLeft = (int)Math.Round(near.X - gap * 0.16);
+            // Keep the crop tightly around the nickname columns. Wide crops make Tesseract
+            // mix borders/buttons with short names such as Вай and m1d9.
+            var nearLeft = (int)Math.Round(near.X - gap * 0.10);
             var nearbyRect = Clamp(new CvRect(
                 nearLeft,
                 top,
                 boundary - nearLeft,
-                (int)Math.Round(rowHeight * 17.0)), source.Size());
+                row * 21), source.Size());
 
-            var partyLeft = (int)Math.Round(boundary - rowHeight * 0.8);
-            var partyRight = (int)Math.Round(boundary + gap * 1.10);
+            var partyLeft = boundary;
+            var partyRight = (int)Math.Round(party.X + gap * 0.78);
             var partyRect = Clamp(new CvRect(
                 partyLeft,
                 top,
                 partyRight - partyLeft,
-                (int)Math.Round(rowHeight * 8.0)), source.Size());
+                row * 8), source.Size());
 
-            if (nearbyRect.Width > 40 && nearbyRect.Height > 40 && partyRect.Width > 40 && partyRect.Height > 40)
-                return (nearbyRect, partyRect, "OCR-заголовки", rowHeight);
+            if (nearbyRect.Width > 40 && nearbyRect.Height > 40 && partyRect.Width > 40 && partyRect.Height > 30)
+                return (nearbyRect, partyRect, "OCR-заголовки");
         }
+
+        // Visual fallback for cases where Tesseract cannot read the gold headers.
+        var fallback = FindByWindowTopLine(source);
+        if (fallback is not null)
+            return fallback.Value;
 
         throw new InvalidOperationException("Не вдалося знайти вікно «Група». Переконайся, що на скріні повністю видно таблиці «Гравці поряд» і «Члени групи».");
-    }
-
-    private (CvRect Nearby, CvRect Party, string Source, double RowHeight)? FindByDialogBorderPixels(Mat source)
-    {
-        if (source.Width < 200 || source.Height < 120)
-            return null;
-
-        var scanY1 = Math.Min(source.Height - 1, (int)Math.Round(source.Height * 0.48));
-        var scanX0 = Math.Max(0, (int)Math.Round(source.Width * 0.02));
-        const int stepX = 2;
-
-        var bestWidth = 0;
-        var bestX = 0;
-        var bestY = 0;
-
-        for (var y = 0; y <= scanY1; y++)
-        {
-            var runX = -1;
-            var runSamples = 0;
-
-            for (var x = scanX0; x < source.Width; x += stepX)
-            {
-                var bgr = source.At<Vec3b>(y, x);
-                var ok = IsDialogBorderPixel(bgr);
-
-                if (ok)
-                {
-                    if (runX < 0) runX = x;
-                    runSamples++;
-                    continue;
-                }
-
-                if (runSamples > 0)
-                {
-                    var runWidth = runSamples * stepX;
-                    if (runWidth > bestWidth)
-                    {
-                        bestWidth = runWidth;
-                        bestX = runX;
-                        bestY = y;
-                    }
-
-                    runX = -1;
-                    runSamples = 0;
-                }
-            }
-
-            if (runSamples > 0)
-            {
-                var runWidth = runSamples * stepX;
-                if (runWidth > bestWidth)
-                {
-                    bestWidth = runWidth;
-                    bestX = runX;
-                    bestY = y;
-                }
-            }
-        }
-
-        var minimum = Math.Max(140.0, source.Width * 0.18);
-        if (bestWidth < minimum)
-            return null;
-
-        // The detected run begins a few pixels inside the decorative corners.
-        var padding = Math.Max(4.0, bestWidth * 0.017);
-        var left = Math.Max(0.0, bestX - padding);
-        var dialogWidth = Math.Min(source.Width - left, bestWidth + 2.0 * padding);
-        var top = (double)bestY;
-
-        // These proportions are tied to the PW dialog itself, not screen size.
-        // For the 1074x477 supplied test screenshot this yields approximately:
-        // nearby: x=416..587, y=100..367
-        // party : x=573..753, y=100..237
-        var nearX0 = left + 0.22 * dialogWidth;
-        var nearX1 = left + 0.60 * dialogWidth;
-        var nearY0 = top + 0.125 * dialogWidth;
-        var nearY1 = top + 0.72 * dialogWidth;
-
-        var partyX0 = left + 0.57 * dialogWidth;
-        var partyX1 = left + 0.97 * dialogWidth;
-        var partyY0 = top + 0.125 * dialogWidth;
-        var partyY1 = top + 0.43 * dialogWidth;
-
-        var nearby = Clamp(RectFromBounds(nearX0, nearY0, nearX1, nearY1), source.Size());
-        var party = Clamp(RectFromBounds(partyX0, partyY0, partyX1, partyY1), source.Size());
-
-        if (nearby.Width < 40 || nearby.Height < 40 || party.Width < 40 || party.Height < 40)
-            return null;
-
-        return (nearby, party, "рамка вікна", dialogWidth / 27.0);
-    }
-
-    private static bool IsDialogBorderPixel(Vec3b bgr)
-    {
-        var b = (int)bgr.Item0;
-        var g = (int)bgr.Item1;
-        var r = (int)bgr.Item2;
-
-        return r >= 118 && r <= 198
-            && g >= 105 && g <= 188
-            && b >= 82 && b <= 172
-            && Math.Abs(r - g) <= 42
-            && r - b >= -10 && r - b <= 62
-            && g - b >= -12 && g - b <= 58;
-    }
-
-    private static CvRect RectFromBounds(double x0, double y0, double x1, double y1)
-    {
-        var x = (int)Math.Floor(x0);
-        var y = (int)Math.Floor(y0);
-        var right = (int)Math.Ceiling(x1);
-        var bottom = (int)Math.Ceiling(y1);
-        return new CvRect(x, y, Math.Max(1, right - x), Math.Max(1, bottom - y));
     }
 
     private (CvRect Near, CvRect Party)? TryFindHeaders(Mat source)
     {
         using var enlarged = new Mat();
-        Cv2.Resize(source, enlarged, new Size(), 1.7, 1.7, InterpolationFlags.Cubic);
+        Cv2.Resize(source, enlarged, new Size(), 1.8, 1.8, InterpolationFlags.Cubic);
         using var pix = Pix.LoadFromMemory(EncodePng(enlarged));
-        using var page = _engineMulti.Process(pix, PageSegMode.SparseText);
+        using var page = _engine.Process(pix, PageSegMode.SparseText);
         using var iterator = page.GetIterator();
 
         (CvRect Rect, double Score)? nearBest = null;
@@ -238,10 +136,10 @@ public sealed class OcrService : IDisposable
             if (!iterator.TryGetBoundingBox(PageIteratorLevel.TextLine, out TessRect box)) continue;
 
             var r = new CvRect(
-                (int)Math.Round(box.X1 / 1.7),
-                (int)Math.Round(box.Y1 / 1.7),
-                Math.Max(1, (int)Math.Round(box.Width / 1.7)),
-                Math.Max(1, (int)Math.Round(box.Height / 1.7)));
+                (int)Math.Round(box.X1 / 1.8),
+                (int)Math.Round(box.Y1 / 1.8),
+                Math.Max(1, (int)Math.Round(box.Width / 1.8)),
+                Math.Max(1, (int)Math.Round(box.Height / 1.8)));
 
             var nearScore = HeaderScore(text, "гравціпоряд", "гравці", "поряд");
             if (nearScore > 0.52 && (nearBest is null || nearScore > nearBest.Value.Score))
@@ -265,119 +163,298 @@ public sealed class OcrService : IDisposable
         return Similarity(s, whole);
     }
 
-    private IReadOnlyList<string> RecognizeRegion(Mat source, CvRect rect, int maxExpected, double rowHeight)
+    private (CvRect Nearby, CvRect Party, string Source)? FindByWindowTopLine(Mat source)
+    {
+        using var gray = new Mat();
+        using var edges = new Mat();
+        Cv2.CvtColor(source, gray, ColorConversionCodes.BGR2GRAY);
+        Cv2.Canny(gray, edges, 45, 130);
+
+        var lines = Cv2.HoughLinesP(
+            edges,
+            1,
+            Math.PI / 180,
+            70,
+            minLineLength: Math.Max(150, source.Width * 0.18),
+            maxLineGap: 12);
+
+        var candidates = lines
+            .Where(l => Math.Abs(l.P2.Y - l.P1.Y) <= 2)
+            .Select(l => new
+            {
+                Line = l,
+                Len = Math.Abs(l.P2.X - l.P1.X),
+                Y = (l.P1.Y + l.P2.Y) / 2.0
+            })
+            .Where(x => x.Y < source.Height * 0.45)
+            .Where(x => ((x.Line.P1.X + x.Line.P2.X) / 2.0) > source.Width * 0.18 &&
+                        ((x.Line.P1.X + x.Line.P2.X) / 2.0) < source.Width * 0.72)
+            .Where(x => x.Len > source.Width * 0.22 && x.Len < source.Width * 0.48)
+            .OrderByDescending(x => x.Len)
+            .ToArray();
+
+        if (candidates.Length == 0) return null;
+
+        var top = candidates[0];
+        var lineLeft = Math.Min(top.Line.P1.X, top.Line.P2.X);
+
+        // The detected line is already close to the real dialog width. The old 1.25 multiplier
+        // made the right column drift too far right on 1073x477 screenshots.
+        var estimatedWidth = Math.Min(source.Width, (int)Math.Round(top.Len * 1.02));
+        var dialogX = Math.Max(0, lineLeft - (int)Math.Round(estimatedWidth * 0.015));
+        var dialogY = Math.Max(0, (int)Math.Round(top.Y));
+
+        var listTop = dialogY + (int)Math.Round(estimatedWidth * 0.125);
+        var nearLeft = dialogX + (int)Math.Round(estimatedWidth * 0.235);
+        var boundary = dialogX + (int)Math.Round(estimatedWidth * 0.585);
+        var right = dialogX + (int)Math.Round(estimatedWidth * 0.985);
+
+        var nearRect = Clamp(new CvRect(
+            nearLeft,
+            listTop,
+            boundary - nearLeft,
+            (int)Math.Round(estimatedWidth * 0.62)), source.Size());
+
+        var partyRect = Clamp(new CvRect(
+            boundary,
+            listTop,
+            right - boundary,
+            (int)Math.Round(estimatedWidth * 0.25)), source.Size());
+
+        if (nearRect.Width < 40 || partyRect.Width < 40) return null;
+        return (nearRect, partyRect, "візуальний fallback");
+    }
+
+    private RegionRecognition RecognizeRegion(Mat source, CvRect rect, int maxExpected)
     {
         using var crop = new Mat(source, rect);
         var results = new List<string>();
 
-        // Whole-column passes provide broad coverage.
-        foreach (var variant in BuildColumnVariants(crop))
+        // Perfect World renders each nickname on a clear horizontal baseline. Detecting those
+        // rows first is much more reliable for 3-5 character names than OCR-ing the whole column.
+        var rows = DetectTextRows(crop, maxExpected);
+
+        foreach (var rowRect in rows)
         {
-            using (variant)
-            {
-                AddMatchesFromImage(variant, _engineMulti, PageSegMode.SingleColumn, results);
-                AddMatchesFromImage(variant, _engineMulti, PageSegMode.SparseText, results);
-            }
-        }
-
-        // Row-by-row passes are important for two cases that whole-column OCR
-        // struggles with in PW:
-        //  1) highlighted rows in "Члени групи" (e.g. blaccsonic);
-        //  2) very short latin names / digit-heavy names (e.g. Вай, m1d9).
-        AddRowMatches(crop, rowHeight, maxExpected, _engineMulti, results);
-        AddRowMatches(crop, rowHeight, maxExpected, _engineEng, results);
-
-        return results.Take(maxExpected).ToArray();
-    }
-
-    private void AddRowMatches(Mat crop, double rowHeight, int maxExpected, TesseractEngine engine, List<string> results)
-    {
-        if (rowHeight < 8 || rowHeight > 40)
-            return;
-
-        var rowsByHeight = Math.Max(1, (int)Math.Ceiling(crop.Height / rowHeight));
-        var rowCount = Math.Min(maxExpected, rowsByHeight + 1);
-        var trimX = Math.Max(4, (int)Math.Round(rowHeight * 0.45));
-
-        for (var i = 0; i < rowCount; i++)
-        {
-            var y0 = (int)Math.Round(i * rowHeight - 1.5);
-            var y1 = (int)Math.Round((i + 1) * rowHeight + 2.0);
-            y0 = Math.Clamp(y0, 0, Math.Max(0, crop.Height - 1));
-            y1 = Math.Clamp(y1, y0 + 1, crop.Height);
-
-            var x0 = Math.Clamp(trimX, 0, Math.Max(0, crop.Width - 2));
-            var x1 = Math.Max(x0 + 1, crop.Width - Math.Max(2, trimX / 2));
-            if (x1 <= x0 || y1 <= y0) continue;
-
-            using var row = new Mat(crop, new CvRect(x0, y0, x1 - x0, y1 - y0));
-            foreach (var variant in BuildRowVariants(row))
-            {
-                using (variant)
-                    AddMatchesFromImage(variant, engine, PageSegMode.SingleLine, results);
-            }
-        }
-    }
-
-    private void AddMatchesFromImage(Mat image, TesseractEngine engine, PageSegMode mode, List<string> results)
-    {
-        using var pix = Pix.LoadFromMemory(EncodePng(image));
-        using var page = engine.Process(pix, mode);
-        var text = page.GetText() ?? string.Empty;
-
-        foreach (var rawLine in text.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
-        {
-            var match = _matcher.MatchLine(rawLine.Trim());
+            using var rowCrop = new Mat(crop, rowRect);
+            var match = RecognizeSingleRow(rowCrop);
             if (match is not null && !results.Contains(match, StringComparer.Ordinal))
                 results.Add(match);
         }
+
+        // Whole-column OCR remains as a fallback and can recover names whose brightness-based
+        // row detector missed because of spell effects or unusual UI highlighting.
+        var maxRawLines = 0;
+        foreach (var variant in BuildVariants(crop))
+        {
+            using (variant)
+            using (var pix = Pix.LoadFromMemory(EncodePng(variant)))
+            using (var page = _engine.Process(pix, PageSegMode.SingleColumn))
+            {
+                var rawLines = (page.GetText() ?? "")
+                    .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                    .Select(x => x.Trim())
+                    .Where(IsLikelyNicknameLine)
+                    .ToArray();
+
+                maxRawLines = Math.Max(maxRawLines, Math.Min(maxExpected, rawLines.Length));
+
+                foreach (var rawLine in rawLines)
+                {
+                    var match = _matcher.MatchLine(rawLine);
+                    if (match is not null && !results.Contains(match, StringComparer.Ordinal))
+                        results.Add(match);
+                }
+            }
+        }
+
+        var detected = Math.Max(results.Count, Math.Max(rows.Count, maxRawLines));
+        detected = Math.Min(maxExpected, detected);
+
+        return new RegionRecognition(results.Take(maxExpected).ToArray(), detected);
     }
 
-    private static IEnumerable<Mat> BuildColumnVariants(Mat crop)
+    private string? RecognizeSingleRow(Mat rowCrop)
     {
+        foreach (var variant in BuildVariants(rowCrop, rowMode: true))
+        {
+            using (variant)
+            using (var pix = Pix.LoadFromMemory(EncodePng(variant)))
+            using (var page = _engine.Process(pix, PageSegMode.SingleLine))
+            {
+                var raw = (page.GetText() ?? "").Trim();
+                if (raw.Length == 0) continue;
+                var match = _matcher.MatchLine(raw);
+                if (match is not null) return match;
+            }
+        }
+
+        return null;
+    }
+
+    private static IReadOnlyList<CvRect> DetectTextRows(Mat crop, int maxExpected)
+    {
+        using var gray = new Mat();
+        Cv2.CvtColor(crop, gray, ColorConversionCodes.BGR2GRAY);
+
+        // Different nickname colors need different brightness thresholds. We combine detections
+        // from several thresholds and keep baselines confirmed by at least two of them.
+        var thresholds = new[] { 70, 82, 94, 106, 118, 132, 148, 166 };
+        var clusters = new List<RowCluster>();
+        var minPixels = Math.Max(3, crop.Width / 55);
+
+        for (var thresholdIndex = 0; thresholdIndex < thresholds.Length; thresholdIndex++)
+        {
+            using var mask = new Mat();
+            Cv2.Threshold(gray, mask, thresholds[thresholdIndex], 255, ThresholdTypes.Binary);
+
+            var counts = new int[mask.Rows];
+            for (var y = 0; y < mask.Rows; y++)
+            {
+                using var row = mask.Row(y);
+                counts[y] = Cv2.CountNonZero(row);
+            }
+
+            var groups = BuildActiveGroups(counts, minPixels);
+            foreach (var (top, bottom) in groups)
+            {
+                var height = bottom - top + 1;
+                if (height < 2 || height > 12) continue;
+
+                var center = (top + bottom) / 2.0;
+                if (center < 2 || center > crop.Height - 3) continue;
+
+                var cluster = clusters.FirstOrDefault(c => Math.Abs(c.Center - center) <= 3.5);
+                if (cluster is null)
+                {
+                    cluster = new RowCluster();
+                    clusters.Add(cluster);
+                }
+                cluster.Add(center, top, bottom, thresholdIndex);
+            }
+        }
+
+        var confirmed = clusters
+            .Where(c => c.Support >= 2)
+            .OrderBy(c => c.Center)
+            .ToList();
+
+        // Occasionally one glyph is split into two very close clusters. Keep the stronger one.
+        var compact = new List<RowCluster>();
+        foreach (var cluster in confirmed)
+        {
+            if (compact.Count == 0 || cluster.Center - compact[^1].Center >= 7)
+            {
+                compact.Add(cluster);
+                continue;
+            }
+
+            if (cluster.Support > compact[^1].Support)
+                compact[^1] = cluster;
+        }
+
+        if (compact.Count > maxExpected)
+        {
+            // Prefer the rows with strongest multi-threshold support, then restore visual order.
+            compact = compact
+                .OrderByDescending(c => c.Support)
+                .ThenBy(c => c.Center)
+                .Take(maxExpected)
+                .OrderBy(c => c.Center)
+                .ToList();
+        }
+
+        return compact
+            .Select(c =>
+            {
+                var y = Math.Max(0, c.Top - 3);
+                var bottom = Math.Min(crop.Height, c.Bottom + 4);
+                return new CvRect(0, y, crop.Width, Math.Max(1, bottom - y));
+            })
+            .ToArray();
+    }
+
+    private static IReadOnlyList<(int Top, int Bottom)> BuildActiveGroups(int[] counts, int minPixels)
+    {
+        var groups = new List<(int Top, int Bottom)>();
+        var start = -1;
+        var lastActive = -1;
+
+        for (var y = 0; y < counts.Length; y++)
+        {
+            if (counts[y] >= minPixels)
+            {
+                if (start < 0) start = y;
+                lastActive = y;
+                continue;
+            }
+
+            if (start >= 0 && y - lastActive > 2)
+            {
+                groups.Add((start, lastActive));
+                start = -1;
+                lastActive = -1;
+            }
+        }
+
+        if (start >= 0)
+            groups.Add((start, lastActive));
+
+        return groups;
+    }
+
+    private static bool IsLikelyNicknameLine(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return false;
+        if (value.Length > 28) return false;
+
+        var lower = value.ToLowerInvariant();
+        if (lower.Contains("гравц") || lower.Contains("поряд") || lower.Contains("член") ||
+            lower.Contains("груп") || lower.Contains("виключ") || lower.Contains("вийти") ||
+            lower.Contains("зміна") || lower.Contains("розпуст"))
+            return false;
+
+        return value.Count(char.IsLetterOrDigit) >= 2;
+    }
+
+    private static IEnumerable<Mat> BuildVariants(Mat crop, bool rowMode = false)
+    {
+        var scale = rowMode ? 4.5 : 3.2;
+
         var color = new Mat();
-        Cv2.Resize(crop, color, new Size(), 3.0, 3.0, InterpolationFlags.Cubic);
+        Cv2.Resize(crop, color, new Size(), scale, scale, InterpolationFlags.Cubic);
         yield return color;
 
         using var gray0 = new Mat();
         Cv2.CvtColor(crop, gray0, ColorConversionCodes.BGR2GRAY);
 
-        var gray = new Mat();
-        using (var clahe = Cv2.CreateCLAHE(2.5, new Size(8, 8)))
-            clahe.Apply(gray0, gray);
-        Cv2.Resize(gray, gray, new Size(), 3.0, 3.0, InterpolationFlags.Cubic);
-        yield return gray;
+        using var claheSource = new Mat();
+        using (var clahe = Cv2.CreateCLAHE(2.7, new Size(8, 8)))
+            clahe.Apply(gray0, claheSource);
+        var claheLarge = new Mat();
+        Cv2.Resize(claheSource, claheLarge, new Size(), scale, scale, InterpolationFlags.Cubic);
+        yield return claheLarge;
 
-        using var thresholdBase = new Mat();
-        Cv2.Threshold(gray0, thresholdBase, 0, 255, ThresholdTypes.Binary | ThresholdTypes.Otsu);
-        var threshold = thresholdBase.Clone();
-        if (Cv2.Mean(threshold).Val0 < 128)
-            Cv2.BitwiseNot(threshold, threshold);
-        Cv2.Resize(threshold, threshold, new Size(), 3.2, 3.2, InterpolationFlags.Nearest);
-        yield return threshold;
-    }
+        using var otsuSource = new Mat();
+        Cv2.Threshold(gray0, otsuSource, 0, 255, ThresholdTypes.Binary | ThresholdTypes.Otsu);
+        if (Cv2.Mean(otsuSource).Val0 < 128)
+            Cv2.BitwiseNot(otsuSource, otsuSource);
+        var otsuLarge = new Mat();
+        Cv2.Resize(otsuSource, otsuLarge, new Size(), scale, scale, InterpolationFlags.Nearest);
+        yield return otsuLarge;
 
-    private static IEnumerable<Mat> BuildRowVariants(Mat row)
-    {
-        var color = new Mat();
-        Cv2.Resize(row, color, new Size(), 4.0, 4.0, InterpolationFlags.Cubic);
-        yield return color;
-
-        using var grayBase = new Mat();
-        Cv2.CvtColor(row, grayBase, ColorConversionCodes.BGR2GRAY);
-
-        var gray = new Mat();
-        Cv2.Resize(grayBase, gray, new Size(), 4.0, 4.0, InterpolationFlags.Cubic);
-        yield return gray;
-
-        var adaptive = new Mat();
-        using (var enlarged = new Mat())
-        {
-            Cv2.Resize(grayBase, enlarged, new Size(), 5.0, 5.0, InterpolationFlags.Cubic);
-            Cv2.AdaptiveThreshold(enlarged, adaptive, 255,
-                AdaptiveThresholdTypes.GaussianC, ThresholdTypes.Binary, 31, 7);
-        }
-        yield return adaptive;
+        using var adaptiveSource = new Mat();
+        Cv2.AdaptiveThreshold(
+            gray0,
+            adaptiveSource,
+            255,
+            AdaptiveThresholdTypes.GaussianC,
+            ThresholdTypes.Binary,
+            15,
+            4);
+        var adaptiveLarge = new Mat();
+        Cv2.Resize(adaptiveSource, adaptiveLarge, new Size(), scale, scale, InterpolationFlags.Nearest);
+        yield return adaptiveLarge;
     }
 
     private static byte[] EncodePng(Mat mat)
@@ -399,8 +476,10 @@ public sealed class OcrService : IDisposable
     {
         if (a == b) return 1;
         if (a.Length == 0 || b.Length == 0) return 0;
+
         var prev = Enumerable.Range(0, b.Length + 1).ToArray();
         var cur = new int[b.Length + 1];
+
         for (var i = 1; i <= a.Length; i++)
         {
             cur[0] = i;
@@ -411,12 +490,9 @@ public sealed class OcrService : IDisposable
             }
             (prev, cur) = (cur, prev);
         }
+
         return 1.0 - (double)prev[b.Length] / Math.Max(a.Length, b.Length);
     }
 
-    public void Dispose()
-    {
-        _engineEng.Dispose();
-        _engineMulti.Dispose();
-    }
+    public void Dispose() => _engine.Dispose();
 }
