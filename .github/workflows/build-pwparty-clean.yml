@@ -4,6 +4,8 @@ on:
   pull_request:
     branches:
       - main
+  issues:
+    types: [opened]
   workflow_dispatch:
 
 jobs:
@@ -14,6 +16,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: pw-party-scanner-clean
 
       - uses: actions/setup-dotnet@v4
         with:
