@@ -101,9 +101,13 @@ public sealed class GuildMatcher
                     'р' => 'p', 'с' => 'c', 'у' => 'y', 'х' => 'x', 'к' => 'k',
                     'м' => 'm', 'т' => 't', 'в' => 'b', 'н' => 'h', 'ё' => 'e',
 
-                    // Extra PW-specific confusions verified on supplied screenshots:
-                    // ТОBАРНЯК -> TOBAPHAK, ИтЬоО -> UtboO, ★HESH★ -> НЕЗН.
+                    // Extra PW-specific confusions verified on supplied screenshots.
                     'я' => 'a', 'и' => 'u', 'ь' => 'b', 'з' => 's',
+
+                    // The final round 'о' is sometimes recognized by Tesseract as Cyrillic 'д'.
+                    // Applying the same visual normalization to OCR text and canonical names keeps
+                    // the required 90% threshold while recovering names such as ИтЬоО.
+                    'д' => 'o',
 
                     // Short Latin nicknames. m1d9 is often OCR-ed as midg.
                     'i' => 'l', '9' => 'g', 'q' => 'g',
