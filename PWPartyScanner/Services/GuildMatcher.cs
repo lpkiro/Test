@@ -34,10 +34,12 @@ public sealed class GuildMatcher
         foreach (var canonical in _canonicalNames)
         {
             var canonicalVariants = BuildVariants(canonical).Distinct().ToArray();
+
             foreach (var candidate in candidates)
             foreach (var target in canonicalVariants)
             {
                 if (candidate.Length == 0 || target.Length == 0) continue;
+
                 var score = Similarity(candidate, target);
                 if (score > bestScore)
                 {
@@ -82,7 +84,6 @@ public sealed class GuildMatcher
         {
             if (!char.IsLetterOrDigit(ch0)) continue;
 
-            // Confusions that are common in the tiny Perfect World font.
             var ch = ch0 switch
             {
                 '0' => 'o',
@@ -95,13 +96,16 @@ public sealed class GuildMatcher
             {
                 ch = ch switch
                 {
-                    // Cyrillic glyphs frequently read as their Latin lookalikes.
+                    // Cyrillic -> Latin lookalikes seen in the tiny Perfect World font.
                     'а' => 'a', 'е' => 'e', 'і' => 'i', 'ї' => 'i', 'й' => 'i', 'о' => 'o',
                     'р' => 'p', 'с' => 'c', 'у' => 'y', 'х' => 'x', 'к' => 'k',
                     'м' => 'm', 'т' => 't', 'в' => 'b', 'н' => 'h', 'ё' => 'e',
 
-                    // Short Latin nicknames need equivalence classes before the 90% rule.
-                    // Example: m1d9 is commonly OCR-ed as midg; both normalize to mldg.
+                    // Extra PW-specific confusions verified on supplied screenshots:
+                    // ТОBАРНЯК -> TOBAPHAK, ИтЬоО -> UtboO, ★HESH★ -> НЕЗН.
+                    'я' => 'a', 'и' => 'u', 'ь' => 'b', 'з' => 's',
+
+                    // Short Latin nicknames. m1d9 is often OCR-ed as midg.
                     'i' => 'l', '9' => 'g', 'q' => 'g',
                     _ => ch
                 };
@@ -133,7 +137,9 @@ public sealed class GuildMatcher
             for (var j = 1; j <= b.Length; j++)
             {
                 var cost = a[i - 1] == b[j - 1] ? 0 : 1;
-                cur[j] = Math.Min(Math.Min(cur[j - 1] + 1, prev[j] + 1), prev[j - 1] + cost);
+                cur[j] = Math.Min(
+                    Math.Min(cur[j - 1] + 1, prev[j] + 1),
+                    prev[j - 1] + cost);
             }
             (prev, cur) = (cur, prev);
         }
