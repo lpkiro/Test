@@ -39,3 +39,5 @@ jobs:
           name: PWPartyScanner-clean-win-x64
           path: publish/**
           if-no-files-found: error
+
+# Region/OCR calibration updated for supplied PW screenshots.
