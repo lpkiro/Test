@@ -27,13 +27,13 @@ public sealed class GuildMatcher
     {
         if (string.IsNullOrWhiteSpace(raw)) return null;
 
-        var candidates = BuildOcrCandidates(raw).Distinct(StringComparer.Ordinal).ToArray();
+        var candidates = BuildOcrCandidates(raw).Distinct().ToArray();
         string? bestName = null;
         double bestScore = 0;
 
         foreach (var canonical in _canonicalNames)
         {
-            var canonicalVariants = BuildVariants(canonical).Distinct(StringComparer.Ordinal).ToArray();
+            var canonicalVariants = BuildVariants(canonical).Distinct().ToArray();
             foreach (var candidate in candidates)
             foreach (var target in canonicalVariants)
             {
@@ -47,20 +47,17 @@ public sealed class GuildMatcher
             }
         }
 
-        // The threshold remains exactly 90% as requested. Any accepted result
-        // is always returned using the canonical spelling from players_list.txt.
         return bestScore >= Threshold ? bestName : null;
     }
 
     private static IEnumerable<string> BuildOcrCandidates(string raw)
     {
-        foreach (var variant in BuildVariants(raw)) yield return variant;
+        foreach (var variant in BuildVariants(raw))
+            yield return variant;
 
-        foreach (var token in raw.Split(new[]
-                 {
-                     ' ', '\t', '|', ':', ';', ',', '.', '[', ']', '(', ')', '{', '}',
-                     '<', '>', '/', '\\', '!', '?', '"', '\'', '—', '–', '_'
-                 }, StringSplitOptions.RemoveEmptyEntries))
+        foreach (var token in raw.Split(
+                     new[] { ' ', '\t', '|', ':', ';', ',', '[', ']', '(', ')', '{', '}', '/', '\\' },
+                     StringSplitOptions.RemoveEmptyEntries))
         {
             foreach (var variant in BuildVariants(token))
                 yield return variant;
@@ -85,45 +82,30 @@ public sealed class GuildMatcher
         {
             if (!char.IsLetterOrDigit(ch0)) continue;
 
-            if (!visual)
-            {
-                // Keep the basic form conservative; only the most common
-                // OCR substitutions are normalized here.
-                var basic = ch0 switch
-                {
-                    '0' => 'o',
-                    '1' => 'l',
-                    '5' => 's',
-                    _ => ch0
-                };
-                sb.Append(basic);
-                continue;
-            }
-
-            // Visual form: characters which PW's small font makes nearly
-            // indistinguishable are mapped to the same symbol. This keeps the
-            // final Levenshtein threshold at 90%, while allowing OCR strings
-            // such as "midg" to match canonical "m1d9" at 100%.
+            // Confusions that are common in the tiny Perfect World font.
             var ch = ch0 switch
             {
-                '0' or 'o' or 'о' => 'o',
-                '1' or 'l' or 'i' or 'і' or 'ї' => 'i',
-                '5' or 's' => 's',
-                '9' or 'g' or 'q' => 'g',
-
-                'а' => 'a',
-                'е' or 'ё' => 'e',
-                'р' => 'p',
-                'с' => 'c',
-                'у' => 'y',
-                'х' => 'x',
-                'к' => 'k',
-                'м' => 'm',
-                'т' => 't',
-                'в' => 'b',
-                'н' => 'h',
+                '0' => 'o',
+                '1' => 'l',
+                '5' => 's',
                 _ => ch0
             };
+
+            if (visual)
+            {
+                ch = ch switch
+                {
+                    // Cyrillic glyphs frequently read as their Latin lookalikes.
+                    'а' => 'a', 'е' => 'e', 'і' => 'i', 'ї' => 'i', 'й' => 'i', 'о' => 'o',
+                    'р' => 'p', 'с' => 'c', 'у' => 'y', 'х' => 'x', 'к' => 'k',
+                    'м' => 'm', 'т' => 't', 'в' => 'b', 'н' => 'h', 'ё' => 'e',
+
+                    // Short Latin nicknames need equivalence classes before the 90% rule.
+                    // Example: m1d9 is commonly OCR-ed as midg; both normalize to mldg.
+                    'i' => 'l', '9' => 'g', 'q' => 'g',
+                    _ => ch
+                };
+            }
 
             sb.Append(ch);
         }
