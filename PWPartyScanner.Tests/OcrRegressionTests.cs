@@ -1,3 +1,4 @@
+using System.Text;
 using PWPartyScanner.Models;
 using PWPartyScanner.Services;
 
@@ -55,8 +56,6 @@ public sealed class OcrRegressionTests
             3
         };
 
-        // This is the full fifth screenshot. It used to return zero players because the Hough-line
-        // fallback selected a horizontal game-world line and shifted both nickname crops to the right.
         yield return new object[]
         {
             "image2_regression.webp.b64",
@@ -125,10 +124,32 @@ public sealed class OcrRegressionTests
 
     private static string DecodeFixture(string fixtureName)
     {
-        var base64Path = Path.Combine(AppContext.BaseDirectory, "TestData", fixtureName);
-        Assert.True(File.Exists(base64Path), $"Не знайдено test fixture: {base64Path}");
+        var testData = Path.Combine(AppContext.BaseDirectory, "TestData");
+        var base64Path = Path.Combine(testData, fixtureName);
+        string base64;
 
-        var bytes = Convert.FromBase64String(File.ReadAllText(base64Path).Trim());
+        if (File.Exists(base64Path))
+        {
+            base64 = File.ReadAllText(base64Path).Trim();
+        }
+        else
+        {
+            var stem = fixtureName.EndsWith(".b64", StringComparison.OrdinalIgnoreCase)
+                ? fixtureName[..^4]
+                : fixtureName;
+            var parts = Directory
+                .GetFiles(testData, stem + ".part*.b64")
+                .OrderBy(x => x, StringComparer.Ordinal)
+                .ToArray();
+
+            Assert.NotEmpty(parts);
+            var builder = new StringBuilder();
+            foreach (var part in parts)
+                builder.Append(File.ReadAllText(part).Trim());
+            base64 = builder.ToString();
+        }
+
+        var bytes = Convert.FromBase64String(base64);
         var output = Path.Combine(Path.GetTempPath(), $"pwparty_{Guid.NewGuid():N}.webp");
         File.WriteAllBytes(output, bytes);
         return output;
@@ -175,6 +196,6 @@ public sealed class OcrRegressionTests
 
     private static void TryDelete(string path)
     {
-        try { File.Delete(path); } catch { /* test cleanup only */ }
+        try { File.Delete(path); } catch { }
     }
 }
