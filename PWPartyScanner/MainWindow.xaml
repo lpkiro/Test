@@ -15,7 +15,7 @@
         <StackPanel Grid.Row="0">
             <TextBlock Text="Аналіз учасників зі скріншотів" FontSize="25" FontWeight="SemiBold"/>
             <TextBlock Margin="0,5,0,0"
-                       Text="OCR виконується локально Tesseract. Читаються «Гравці поряд» + «Члени групи». У результат потрапляють лише ніки з players_list.txt зі збігом ≥ 90%."
+                       Text="OCR виконується локально Tesseract. Читаються «Гравці поряд» + «Члени групи». У списки потрапляють лише ніки з players_list.txt зі збігом ≥ 90%."
                        TextWrapping="Wrap"/>
         </StackPanel>
 
@@ -49,7 +49,7 @@
                                             <TextBlock FontSize="15" FontWeight="SemiBold" Text="{Binding FileName}"/>
                                             <TextBlock Grid.Column="1" Margin="20,0,4,0" Foreground="#555">
                                                 <Run Text="Поряд: "/><Run Text="{Binding NearbyCount}"/>
-                                                <Run Text="   Група: "/><Run Text="{Binding PartyCount}"/>
+                                                <Run Text="   Група: "/><Run Text="{Binding PartyCount}"/><Run Text=" із "/><Run Text="{Binding PartyDetectedCount}"/>
                                                 <Run Text="   Унікальних: "/><Run Text="{Binding UniqueCount}"/>
                                             </TextBlock>
                                         </Grid>
@@ -66,26 +66,32 @@
                                             </Grid.ColumnDefinitions>
 
                                             <StackPanel Grid.Column="0">
-                                                <TextBlock FontWeight="Bold" Margin="0,0,0,7">
-                                                    <Run Text="Гравці поряд ("/><Run Text="{Binding NearbyCount}"/><Run Text=")"/>
+                                                <TextBlock FontWeight="Bold" Margin="0,0,0,2">
+                                                    <Run Text="Гравці поряд — зі списку ("/><Run Text="{Binding NearbyCount}"/><Run Text=")"/>
+                                                </TextBlock>
+                                                <TextBlock Margin="0,0,0,7" Foreground="#777" FontSize="12">
+                                                    <Run Text="Рядків на скріні: "/><Run Text="{Binding NearbyDetectedCount}"/>
                                                 </TextBlock>
                                                 <ItemsControl ItemsSource="{Binding NearbyPlayers}">
                                                     <ItemsControl.ItemTemplate>
                                                         <DataTemplate>
-                                                            <TextBlock Margin="0,1" Text="{Binding StringFormat=• {0}}"/>
+                                                            <TextBlock Margin="0,1" Text="{Binding StringFormat='• {0}'}"/>
                                                         </DataTemplate>
                                                     </ItemsControl.ItemTemplate>
                                                 </ItemsControl>
                                             </StackPanel>
 
                                             <StackPanel Grid.Column="2">
-                                                <TextBlock FontWeight="Bold" Margin="0,0,0,7">
-                                                    <Run Text="Члени групи ("/><Run Text="{Binding PartyCount}"/><Run Text=")"/>
+                                                <TextBlock FontWeight="Bold" Margin="0,0,0,2">
+                                                    <Run Text="Члени групи — зі списку ("/><Run Text="{Binding PartyCount}"/><Run Text=")"/>
+                                                </TextBlock>
+                                                <TextBlock Margin="0,0,0,7" Foreground="#777" FontSize="12">
+                                                    <Run Text="Рядків на скріні: "/><Run Text="{Binding PartyDetectedCount}"/>
                                                 </TextBlock>
                                                 <ItemsControl ItemsSource="{Binding PartyPlayers}">
                                                     <ItemsControl.ItemTemplate>
                                                         <DataTemplate>
-                                                            <TextBlock Margin="0,1" Text="{Binding StringFormat=• {0}}"/>
+                                                            <TextBlock Margin="0,1" Text="{Binding StringFormat='• {0}'}"/>
                                                         </DataTemplate>
                                                     </ItemsControl.ItemTemplate>
                                                 </ItemsControl>
@@ -98,7 +104,7 @@
                                                 <ItemsControl ItemsSource="{Binding UniquePlayers}">
                                                     <ItemsControl.ItemTemplate>
                                                         <DataTemplate>
-                                                            <TextBlock Margin="0,1" Text="{Binding StringFormat=• {0}}"/>
+                                                            <TextBlock Margin="0,1" Text="{Binding StringFormat='• {0}'}"/>
                                                         </DataTemplate>
                                                     </ItemsControl.ItemTemplate>
                                                 </ItemsControl>
@@ -128,7 +134,7 @@
                             <ItemsControl x:Name="CombinedPlayersList">
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate>
-                                        <TextBlock Margin="0,2" Text="{Binding StringFormat=• {0}}"/>
+                                        <TextBlock Margin="0,2" Text="{Binding StringFormat='• {0}'}"/>
                                     </DataTemplate>
                                 </ItemsControl.ItemTemplate>
                             </ItemsControl>
