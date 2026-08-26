@@ -9,7 +9,10 @@ namespace PWPartyScanner.Services;
 
 public sealed class OcrService : IDisposable
 {
-    private readonly TesseractEngine _engine;
+    private readonly TesseractEngine _combinedEngine;
+    private readonly TesseractEngine _engEngine;
+    private readonly TesseractEngine _ukrEngine;
+    private readonly TesseractEngine _rusEngine;
     private readonly GuildMatcher _matcher;
 
     private sealed record RegionRecognition(IReadOnlyList<string> Players, int DetectedCount);
@@ -41,9 +44,33 @@ public sealed class OcrService : IDisposable
             throw new DirectoryNotFoundException("Не знайдено папку tessdata поруч із програмою.");
 
         _matcher = new GuildMatcher(players);
-        _engine = new TesseractEngine(tessdata, "eng+ukr+rus");
-        _engine.DefaultPageSegMode = PageSegMode.SparseText;
-        _engine.SetVariable("preserve_interword_spaces", "1");
+
+        // Important for the PW font: a combined language model is not always the best model.
+        // Example from the supplied screenshot:
+        //   eng+ukr+rus: TOBAPHAK, Py, Evarika
+        //   ukr only:    ТОВАРНЯК, Руф
+        //   eng only:    Evanika, m1d0, HESH
+        // Therefore recognition tries the combined model and the individual models.
+        _combinedEngine = CreateEngine(tessdata, "eng+ukr+rus");
+        _engEngine = CreateEngine(tessdata, "eng");
+        _ukrEngine = CreateEngine(tessdata, "ukr");
+        _rusEngine = CreateEngine(tessdata, "rus");
+    }
+
+    private static TesseractEngine CreateEngine(string tessdata, string language)
+    {
+        var engine = new TesseractEngine(tessdata, language);
+        engine.DefaultPageSegMode = PageSegMode.SparseText;
+        engine.SetVariable("preserve_interword_spaces", "1");
+        return engine;
+    }
+
+    private IEnumerable<TesseractEngine> RecognitionEngines()
+    {
+        yield return _combinedEngine;
+        yield return _engEngine;
+        yield return _ukrEngine;
+        yield return _rusEngine;
     }
 
     public ScanResult Scan(string filePath)
@@ -76,8 +103,6 @@ public sealed class OcrService : IDisposable
 
     private (CvRect Nearby, CvRect Party, string Source) FindListRegions(Mat source)
     {
-        // Best path: use both recognized column headers. This keeps the crop independent
-        // from the dialog position and screen resolution.
         var headers = TryFindHeaders(source);
         if (headers is not null)
         {
@@ -89,9 +114,6 @@ public sealed class OcrService : IDisposable
             var row = Math.Max(10, Math.Max(near.Height, party.Height));
             var top = Math.Max(near.Bottom, party.Bottom) + Math.Max(2, row / 6);
 
-            // Important: nickname glyphs start noticeably left of the "Гравці поряд"
-            // header. 0.10 * gap clipped the first letter of several names on the supplied
-            // 746x838 screenshot (РАКЛО, ТОВАРНЯК, m1d0, Bybl, ИтЬоО, SABRINA).
             var nearLeft = (int)Math.Round(near.X - gap * 0.18);
             var nearbyRect = Clamp(new CvRect(
                 nearLeft,
@@ -111,8 +133,6 @@ public sealed class OcrService : IDisposable
                 return (nearbyRect, partyRect, "OCR-заголовки");
         }
 
-        // If the small headers are unreadable, the large centered "Група" title is a
-        // much more reliable geometric anchor than arbitrary horizontal game-world lines.
         var title = TryFindDialogTitle(source);
         if (title is not null)
         {
@@ -121,7 +141,6 @@ public sealed class OcrService : IDisposable
                 return (regions.Value.Nearby, regions.Value.Party, "OCR-заголовок «Група»");
         }
 
-        // Last resort only.
         var fallback = FindByWindowTopLine(source);
         if (fallback is not null)
             return fallback.Value;
@@ -139,7 +158,7 @@ public sealed class OcrService : IDisposable
         using var enlarged = new Mat();
         Cv2.Resize(source, enlarged, new Size(), scale, scale, InterpolationFlags.Cubic);
         using var pix = Pix.LoadFromMemory(EncodePng(enlarged));
-        using var page = _engine.Process(pix, PageSegMode.SparseText);
+        using var page = _combinedEngine.Process(pix, PageSegMode.SparseText);
         using var iterator = page.GetIterator();
 
         (CvRect Rect, double Score)? nearBest = null;
@@ -176,7 +195,7 @@ public sealed class OcrService : IDisposable
         using var enlarged = new Mat();
         Cv2.Resize(source, enlarged, new Size(), scale, scale, InterpolationFlags.Cubic);
         using var pix = Pix.LoadFromMemory(EncodePng(enlarged));
-        using var page = _engine.Process(pix, PageSegMode.SparseText);
+        using var page = _combinedEngine.Process(pix, PageSegMode.SparseText);
         using var iterator = page.GetIterator();
 
         (CvRect Rect, double Score)? best = null;
@@ -317,25 +336,34 @@ public sealed class OcrService : IDisposable
         }
 
         var maxRawLines = 0;
+
+        // Whole-column OCR recovers highlighted rows and rows that brightness detection misses.
+        // Run the same image through each language model because the combined model can choose
+        // the wrong alphabet even when an individual model reads the nickname perfectly.
         foreach (var variant in BuildVariants(crop, rowMode: false))
         {
             using (variant)
-            using (var pix = Pix.LoadFromMemory(EncodePng(variant)))
-            using (var page = _engine.Process(pix, PageSegMode.SingleColumn))
             {
-                var rawLines = (page.GetText() ?? string.Empty)
-                    .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
-                    .Select(x => x.Trim())
-                    .Where(IsLikelyNicknameLine)
-                    .ToArray();
-
-                maxRawLines = Math.Max(maxRawLines, Math.Min(maxExpected, rawLines.Length));
-
-                foreach (var rawLine in rawLines)
+                var png = EncodePng(variant);
+                foreach (var engine in RecognitionEngines())
                 {
-                    var match = _matcher.MatchLine(rawLine);
-                    if (match is not null && !results.Contains(match, StringComparer.Ordinal))
-                        results.Add(match);
+                    using var pix = Pix.LoadFromMemory(png);
+                    using var page = engine.Process(pix, PageSegMode.SingleColumn);
+
+                    var rawLines = (page.GetText() ?? string.Empty)
+                        .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                        .Select(x => x.Trim())
+                        .Where(IsLikelyNicknameLine)
+                        .ToArray();
+
+                    maxRawLines = Math.Max(maxRawLines, Math.Min(maxExpected, rawLines.Length));
+
+                    foreach (var rawLine in rawLines)
+                    {
+                        var match = _matcher.MatchLine(rawLine);
+                        if (match is not null && !results.Contains(match, StringComparer.Ordinal))
+                            results.Add(match);
+                    }
                 }
             }
         }
@@ -351,14 +379,21 @@ public sealed class OcrService : IDisposable
         foreach (var variant in BuildVariants(rowCrop, rowMode: true))
         {
             using (variant)
-            using (var pix = Pix.LoadFromMemory(EncodePng(variant)))
-            using (var page = _engine.Process(pix, PageSegMode.SingleLine))
             {
-                var raw = (page.GetText() ?? string.Empty).Trim();
-                if (raw.Length == 0) continue;
+                var png = EncodePng(variant);
 
-                var match = _matcher.MatchLine(raw);
-                if (match is not null) return match;
+                foreach (var engine in RecognitionEngines())
+                {
+                    using var pix = Pix.LoadFromMemory(png);
+                    using var page = engine.Process(pix, PageSegMode.SingleLine);
+
+                    var raw = (page.GetText() ?? string.Empty).Trim();
+                    if (raw.Length == 0) continue;
+
+                    var match = _matcher.MatchLine(raw);
+                    if (match is not null)
+                        return match;
+                }
             }
         }
 
@@ -529,8 +564,6 @@ public sealed class OcrService : IDisposable
         Cv2.Resize(adaptiveSource, adaptiveLarge, new Size(), scale, scale, InterpolationFlags.Nearest);
         yield return adaptiveLarge;
 
-        // Nicknames in the left column are typically cyan/blue. Max(B,G) suppresses much of
-        // the brown dialog background while preserving those glyphs; it also keeps white party text.
         var channels = Cv2.Split(crop);
         try
         {
@@ -601,5 +634,11 @@ public sealed class OcrService : IDisposable
         return 1.0 - (double)prev[b.Length] / Math.Max(a.Length, b.Length);
     }
 
-    public void Dispose() => _engine.Dispose();
+    public void Dispose()
+    {
+        _combinedEngine.Dispose();
+        _engEngine.Dispose();
+        _ukrEngine.Dispose();
+        _rusEngine.Dispose();
+    }
 }
