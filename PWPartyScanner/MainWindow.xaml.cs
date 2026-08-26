@@ -147,11 +147,15 @@ public partial class MainWindow : Window
         foreach (var item in _results)
         {
             sb.AppendLine($"Файл: {item.FileName}");
-            sb.AppendLine($"Гравці поряд: {item.NearbyCount}");
+            sb.AppendLine($"Гравці поряд — рядків на скріні: {item.NearbyDetectedCount}");
+            sb.AppendLine($"Гравці поряд — знайдено у players_list.txt: {item.NearbyCount}");
             foreach (var name in item.NearbyPlayers) sb.AppendLine($"  - {name}");
-            sb.AppendLine($"Члени групи: {item.PartyCount}");
+
+            sb.AppendLine($"Члени групи — рядків на скріні: {item.PartyDetectedCount}");
+            sb.AppendLine($"Члени групи — знайдено у players_list.txt: {item.PartyCount}");
             foreach (var name in item.PartyPlayers) sb.AppendLine($"  - {name}");
-            sb.AppendLine($"Унікальних: {item.UniqueCount}");
+
+            sb.AppendLine($"Унікальних зі списку гільдії: {item.UniqueCount}");
             foreach (var name in item.UniquePlayers) sb.AppendLine($"  - {name}");
             sb.AppendLine();
         }
