@@ -1,11 +1,9 @@
 name: Build PWPartyScanner clean
 
 on:
-  pull_request:
+  push:
     branches:
-      - main
-  issues:
-    types: [opened]
+      - pw-party-scanner-clean
   workflow_dispatch:
 
 jobs:
@@ -16,8 +14,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: pw-party-scanner-clean
 
       - uses: actions/setup-dotnet@v4
         with:
@@ -43,3 +39,5 @@ jobs:
           name: PWPartyScanner-clean-win-x64
           path: publish/**
           if-no-files-found: error
+
+# Region/OCR calibration updated for supplied PW screenshots.
