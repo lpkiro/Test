@@ -9,13 +9,80 @@
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <AssemblyName>PWPartyScanner</AssemblyName>
     <RootNamespace>PWPartyScanner</RootNamespace>
+
+    <TessDataDir>$(MSBuildProjectDirectory)\tessdata</TessDataDir>
+    <TessDataBaseUrl>https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/main</TessDataBaseUrl>
   </PropertyGroup>
+
   <ItemGroup>
     <PackageReference Include="OpenCvSharp4.Windows" Version="4.13.0.20260627" />
     <PackageReference Include="Tesseract" Version="5.2.0" />
   </ItemGroup>
+
   <ItemGroup>
-    <None Include="players_list.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
-    <None Include="tessdata\*.traineddata" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="players_list.txt"
+          CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="PreserveNewest" />
+
+    <!-- Explicit file items are used instead of a wildcard so files downloaded
+         during the build are still copied to bin/publish in the same build. -->
+    <None Include="tessdata\eng.traineddata"
+          CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="PreserveNewest" />
+    <None Include="tessdata\ukr.traineddata"
+          CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="PreserveNewest" />
+    <None Include="tessdata\rus.traineddata"
+          CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
+
+  <!--
+    Make a clean clone runnable without any manual setup.
+    The language models are downloaded only when they are missing locally.
+    No PowerShell/cmd bootstrapper is used; this is a normal MSBuild task.
+  -->
+  <Target Name="EnsureTesseractData" BeforeTargets="PrepareForBuild">
+    <MakeDir Directories="$(TessDataDir)" Condition="!Exists('$(TessDataDir)')" />
+
+    <Message Text="Downloading Tesseract eng.traineddata..."
+             Importance="high"
+             Condition="!Exists('$(TessDataDir)\eng.traineddata')" />
+    <DownloadFile SourceUrl="$(TessDataBaseUrl)/eng.traineddata"
+                  DestinationFolder="$(TessDataDir)"
+                  DestinationFileName="eng.traineddata"
+                  SkipUnchangedFiles="true"
+                  Retries="3"
+                  RetryDelayMilliseconds="1000"
+                  Condition="!Exists('$(TessDataDir)\eng.traineddata')" />
+
+    <Message Text="Downloading Tesseract ukr.traineddata..."
+             Importance="high"
+             Condition="!Exists('$(TessDataDir)\ukr.traineddata')" />
+    <DownloadFile SourceUrl="$(TessDataBaseUrl)/ukr.traineddata"
+                  DestinationFolder="$(TessDataDir)"
+                  DestinationFileName="ukr.traineddata"
+                  SkipUnchangedFiles="true"
+                  Retries="3"
+                  RetryDelayMilliseconds="1000"
+                  Condition="!Exists('$(TessDataDir)\ukr.traineddata')" />
+
+    <Message Text="Downloading Tesseract rus.traineddata..."
+             Importance="high"
+             Condition="!Exists('$(TessDataDir)\rus.traineddata')" />
+    <DownloadFile SourceUrl="$(TessDataBaseUrl)/rus.traineddata"
+                  DestinationFolder="$(TessDataDir)"
+                  DestinationFileName="rus.traineddata"
+                  SkipUnchangedFiles="true"
+                  Retries="3"
+                  RetryDelayMilliseconds="1000"
+                  Condition="!Exists('$(TessDataDir)\rus.traineddata')" />
+
+    <Error Condition="!Exists('$(TessDataDir)\eng.traineddata')"
+           Text="Failed to obtain tessdata/eng.traineddata." />
+    <Error Condition="!Exists('$(TessDataDir)\ukr.traineddata')"
+           Text="Failed to obtain tessdata/ukr.traineddata." />
+    <Error Condition="!Exists('$(TessDataDir)\rus.traineddata')"
+           Text="Failed to obtain tessdata/rus.traineddata." />
+  </Target>
 </Project>
