@@ -161,14 +161,14 @@ public partial class MainWindow : Window
             sb.AppendLine($"Файл: {item.FileName}");
             sb.AppendLine($"Гравці поряд — рядків на скріні: {item.NearbyDetectedCount}");
             sb.AppendLine($"Гравці поряд — знайдено у players_list.txt: {item.NearbyCount}");
-            foreach (var name in item.NearbyPlayers) sb.AppendLine($"  - {name}");
+            foreach (var name in item.NearbyPlayers) sb.AppendLine($"{name}");
 
             sb.AppendLine($"Члени групи — рядків на скріні: {item.PartyDetectedCount}");
             sb.AppendLine($"Члени групи — знайдено у players_list.txt: {item.PartyCount}");
-            foreach (var name in item.PartyPlayers) sb.AppendLine($"  - {name}");
+            foreach (var name in item.PartyPlayers) sb.AppendLine($"{name}");
 
             sb.AppendLine($"Унікальних зі списку гільдії: {item.UniqueCount}");
-            foreach (var name in item.UniquePlayers) sb.AppendLine($"  - {name}");
+            foreach (var name in item.UniquePlayers) sb.AppendLine($"{name}");
             sb.AppendLine();
         }
 
@@ -178,7 +178,7 @@ public partial class MainWindow : Window
             sb.AppendLine("========================================");
             sb.AppendLine("РАЗОМ ПО ВСІХ СКРІНШОТАХ");
             sb.AppendLine($"Унікальних: {_combinedPlayers.Length}");
-            foreach (var name in _combinedPlayers) sb.AppendLine($"  - {name}");
+            foreach (var name in _combinedPlayers) sb.AppendLine($"{name}");
             sb.AppendLine();
         }
 
